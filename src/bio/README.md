@@ -1,5 +1,9 @@
 # Blob I/O
 
+For experimental per-device throughput weighting, configuration examples, and
+the cross-node implementation TODO, see
+[Heterogeneous NVMe](../../docs/admin/heterogeneous-nvme.md).
+
 The Blob I/O (BIO) module was implemented for issuing I/O over NVMe SSDs. The BIO module covers NVMe SSD support, faulty device detection, device health monitoring, NVMe SSD hot plug functionality, and also SSD identification with the use of Intel VMD devices.
 
 This document contains the following sections:

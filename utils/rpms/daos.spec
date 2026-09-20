@@ -607,6 +607,7 @@ fi
 %{_bindir}/rdbt
 %{_bindir}/smd_ut
 %{_bindir}/bio_ut
+%{_bindir}/bio_weight_test
 %{_bindir}/vea_ut
 %{_bindir}/vos_tests
 %{_bindir}/vea_stress

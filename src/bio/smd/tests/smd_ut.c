@@ -16,8 +16,10 @@
 #include <getopt.h>
 
 #include <daos/common.h>
+#include <daos_srv/bio.h>
 #include <daos_srv/smd.h>
 #include "../smd_internal.h"
+#include "../../bio_weight.h"
 #include <daos/tests_lib.h>
 #include <daos/sys_db.h>
 
@@ -503,10 +505,57 @@ ut_dev_replace(void **state)
 	}
 }
 
+/* Exercise the capacity guard against real SMD accounting, not just a counter. */
+static void
+ut_weight_capacity(void **state)
+{
+	struct smd_dev_info *info;
+	uuid_t               id;
+	unsigned int         target, role, used;
+	int                  rc;
+
+	uuid_generate(id);
+	/* Combined data/meta/WAL roles consume three entries per target. */
+	for (target = 1000; target < 1021; target++) {
+		for (role = SMD_DEV_TYPE_DATA; role < SMD_DEV_TYPE_MAX; role++) {
+			rc = smd_dev_add_tgt(id, target, role, NULL);
+			assert_rc_equal(rc, 0);
+		}
+	}
+	rc = smd_dev_get_by_id(id, &info);
+	assert_rc_equal(rc, 0);
+	used = info->sdi_tgt_cnt;
+	smd_dev_free_info(info);
+	assert_int_equal(used, 63);
+	assert_false(bio_weight_fits(used, 3, SMD_MAX_TGT_CNT));
+	assert_false(bio_weight_fits(used, 2, SMD_MAX_TGT_CNT));
+	assert_true(bio_weight_fits(used, 1, SMD_MAX_TGT_CNT));
+
+	/* System-target mappings also consume a slot, despite not adding VOS load. */
+	rc = smd_dev_add_tgt(id, BIO_SYS_TGT_ID, SMD_DEV_TYPE_META, NULL);
+	assert_rc_equal(rc, 0);
+	rc = smd_dev_get_by_id(id, &info);
+	assert_rc_equal(rc, 0);
+	assert_int_equal(info->sdi_tgt_cnt, SMD_MAX_TGT_CNT);
+	assert_false(bio_weight_fits(info->sdi_tgt_cnt, 1, SMD_MAX_TGT_CNT));
+	smd_dev_free_info(info);
+	rc = smd_dev_add_tgt(id, 1021, SMD_DEV_TYPE_DATA, NULL);
+	assert_rc_equal(rc, -DER_OVERFLOW);
+	rc = smd_dev_get_by_tgt(1021, SMD_DEV_TYPE_DATA, &info);
+	assert_rc_equal(rc, -DER_NONEXIST);
+	/* A failed addition must leave existing role mappings readable. */
+	rc = smd_dev_get_by_tgt(1000, SMD_DEV_TYPE_WAL, &info);
+	assert_rc_equal(rc, 0);
+	assert_int_equal(uuid_compare(info->sdi_id, id), 0);
+	assert_int_equal(info->sdi_tgt_cnt, SMD_MAX_TGT_CNT);
+	smd_dev_free_info(info);
+}
+
 static const struct CMUnitTest smd_uts[] = {
 	{ "smd_ut_device", ut_device, NULL, NULL},
 	{ "smd_ut_pool", ut_pool, NULL, NULL},
 	{ "smd_ut_dev_replace", ut_dev_replace, NULL, NULL},
+	{ "smd_ut_weight_capacity", ut_weight_capacity, NULL, NULL},
 };
 
 static void

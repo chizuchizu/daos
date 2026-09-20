@@ -1,0 +1,13 @@
+"""Build dependency-free BIO weighting policy tests."""
+
+
+def scons():
+    """Execute build."""
+    Import('denv')
+    tenv = denv.Clone()
+    weight_ut = tenv.d_test_program('bio_weight_test.c', LIBS=[])
+    tenv.Install('$PREFIX/bin/', weight_ut)
+
+
+if __name__ == "SCons.Script":
+    scons()

@@ -228,6 +228,7 @@ EOF
                    "${SL_PREFIX}/bin/rdbt" \
                    "${SL_PREFIX}/bin/smd_ut" \
                    "${SL_PREFIX}/bin/bio_ut" \
+                   "${SL_PREFIX}/bin/bio_weight_test" \
                    "${SL_PREFIX}/bin/vea_ut" \
                    "${SL_PREFIX}/bin/vos_tests" \
                    "${SL_PREFIX}/bin/vea_stress" \

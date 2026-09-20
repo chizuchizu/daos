@@ -159,6 +159,7 @@
   base: "BUILD_DIR"
   tests:
     - cmd: ["src/bio/smd/tests/smd_ut"]
+    - cmd: ["src/bio/tests/bio_weight_test"]
 - name: client
   base: "PREFIX"
   tests:

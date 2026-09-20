@@ -296,6 +296,8 @@ struct bio_bdev {
 	struct bio_blobstore	*bb_blobstore;
 	/* count of target(VOS xstream) per device */
 	int			 bb_tgt_cnt;
+	/* Relative throughput used only when assigning previously unmapped targets. */
+	unsigned int             bb_weight;
 	/*
 	 * If a VMD LED identify event takes place with a prescribed duration, the end time will be
 	 * saved and when it is reached the prior LED state will be restored.

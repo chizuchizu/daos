@@ -26,6 +26,7 @@
 #include <spdk/env_dpdk.h>
 #include <spdk/version.h>
 #include "bio_internal.h"
+#include "bio_weight.h"
 #include <daos_srv/smd.h>
 
 #include "smd.pb-c.h"
@@ -956,6 +957,7 @@ create_bio_bdev(struct bio_xs_context *ctxt, const char *bdev_name, unsigned int
 	uuid_t				 bs_uuid;
 	int				 rc;
 	bool				 new_bs = false;
+	char                            *weights = NULL;
 
 	/*
 	 * SPDK guarantees uniqueness of bdev name. When a device is hot
@@ -974,6 +976,13 @@ create_bio_bdev(struct bio_xs_context *ctxt, const char *bdev_name, unsigned int
 	}
 
 	D_INIT_LIST_HEAD(&d_bdev->bb_link);
+	d_agetenv_str(&weights, BIO_NVME_WEIGHTS_ENV);
+	rc = bio_weight_get(weights, bdev_name, &d_bdev->bb_weight);
+	d_freeenv_str(&weights);
+	if (rc != 0) {
+		D_ERROR("Invalid %s configuration\n", BIO_NVME_WEIGHTS_ENV);
+		D_GOTO(error, rc = -DER_INVAL);
+	}
 
 	d_bdev->bb_roles = roles;
 	D_STRNDUP(d_bdev->bb_name, bdev_name, strlen(bdev_name));
@@ -1081,6 +1090,42 @@ error:
 }
 
 static int
+validate_bio_weights(void)
+{
+	char             *config = NULL;
+	const char       *cursor, *name;
+	struct spdk_bdev *bdev;
+	size_t            len;
+	unsigned int      weight;
+	int               rc;
+
+	d_agetenv_str(&config, BIO_NVME_WEIGHTS_ENV);
+	cursor = config;
+	while ((rc = bio_weight_next(config, &cursor, &name, &len, &weight)) > 0) {
+		for (bdev = spdk_bdev_first(); bdev != NULL; bdev = spdk_bdev_next(bdev)) {
+			const char *bdev_name = spdk_bdev_get_name(bdev);
+
+			if (nvme_glb.bd_bdev_class == get_bdev_type(bdev) &&
+			    strlen(bdev_name) == len && memcmp(bdev_name, name, len) == 0)
+				break;
+		}
+		if (bdev == NULL) {
+			D_ERROR("Unknown device in %s: %.*s\n", BIO_NVME_WEIGHTS_ENV, (int)len,
+				name);
+			rc = -1;
+			break;
+		}
+	}
+	d_freeenv_str(&config);
+	if (rc < 0) {
+		D_ERROR("Invalid %s; expected unique bdev=weight entries, weights 1..%u\n",
+			BIO_NVME_WEIGHTS_ENV, BIO_NVME_WEIGHT_MAX);
+		return -DER_INVAL;
+	}
+	return 0;
+}
+
+static int
 init_bio_bdevs(struct bio_xs_context *ctxt)
 {
 	struct bio_bdev  *d_bdev;
@@ -1093,6 +1138,10 @@ init_bio_bdevs(struct bio_xs_context *ctxt)
 		D_ERROR("No SPDK bdevs found!\n");
 		return -DER_NONEXIST;
 	}
+	/* Reject configuration errors before opening or creating any blobstores. */
+	rc = validate_bio_weights();
+	if (rc != 0)
+		return rc;
 
 	for (bdev = spdk_bdev_first(); bdev != NULL; bdev = spdk_bdev_next(bdev)) {
 		if (nvme_glb.bd_bdev_class != get_bdev_type(bdev))
@@ -1291,42 +1340,64 @@ bio_nvme_configured(enum smd_dev_type type)
 static struct bio_bdev *
 choose_device(int tgt_id, enum smd_dev_type st)
 {
-	struct bio_bdev		*d_bdev;
-	struct bio_bdev		*chosen_bdev = NULL;
-	int			 lowest_tgt_cnt = 1 << 30, rc;
-	struct smd_dev_info	*dev_info = NULL;
+	struct bio_bdev     *d_bdev;
+	struct bio_bdev     *chosen_bdev = NULL;
+	int                  rc;
+	struct smd_dev_info *dev_info = NULL;
 
 	D_ASSERT(!d_list_empty(&nvme_glb.bd_bdevs));
 	/*
-	 * Traverse the list and return the device with the least amount of
-	 * mapped targets.
+	 * Balance mapped targets per unit of configured throughput. Unit weights
+	 * preserve the legacy assignment order. Existing SMD mappings bypass this
+	 * path, so changing weights never silently relocates persistent data.
 	 */
 	d_list_for_each_entry(d_bdev, &nvme_glb.bd_bdevs, bb_link) {
-		/* Find the initial target count per device */
+		unsigned int      used = 0, needed = 0;
+		enum smd_dev_type role;
+
+		if (!is_role_match(d_bdev->bb_roles, smd_dev_type2role(st)))
+			continue;
+
+		/* Count every SMD slot assign_roles() will append, including system targets. */
+		for (role = SMD_DEV_TYPE_DATA; role < SMD_DEV_TYPE_MAX; role++) {
+			if (!is_role_match(d_bdev->bb_roles, smd_dev_type2role(role)))
+				continue;
+			needed++;
+			if (!bio_nvme_configured(SMD_DEV_TYPE_META))
+				break;
+		}
+
+		/* Use persistent occupancy: bb_tgt_cnt deliberately excludes system targets. */
+		rc = smd_dev_get_by_id(d_bdev->bb_uuid, &dev_info);
+		if (rc == 0) {
+			D_ASSERT(dev_info != NULL && dev_info->sdi_tgt_cnt != 0);
+			used = dev_info->sdi_tgt_cnt;
+			smd_dev_free_info(dev_info);
+		} else if (rc != -DER_NONEXIST) {
+			D_ERROR("Unable to get dev info for " DF_UUID "\n",
+				DP_UUID(d_bdev->bb_uuid));
+			return NULL;
+		}
 		if (!d_bdev->bb_tgt_cnt_init) {
-			rc = smd_dev_get_by_id(d_bdev->bb_uuid, &dev_info);
-			if (rc == 0) {
-				D_ASSERT(dev_info != NULL && dev_info->sdi_tgt_cnt != 0);
-				d_bdev->bb_tgt_cnt = dev_info->sdi_tgt_cnt;
-				smd_dev_free_info(dev_info);
-			} else if (rc == -DER_NONEXIST) {
-				/* Device isn't in SMD, not used by DAOS yet */
-				d_bdev->bb_tgt_cnt = 0;
-			} else {
-				D_ERROR("Unable to get dev info for "DF_UUID"\n",
-					DP_UUID(d_bdev->bb_uuid));
-				return NULL;
-			}
+			d_bdev->bb_tgt_cnt      = used;
 			d_bdev->bb_tgt_cnt_init = 1;
 		}
-		/* Choose the least used one */
-		if (is_role_match(d_bdev->bb_roles, smd_dev_type2role(st)) &&
-		    d_bdev->bb_tgt_cnt < lowest_tgt_cnt) {
-			lowest_tgt_cnt = d_bdev->bb_tgt_cnt;
+		/* Check the entire role assignment before its first persistent update. */
+		if (!bio_weight_fits(used, needed, SMD_MAX_TGT_CNT))
+			continue;
+		/* Compare ratios with integer products, retaining list-order ties. */
+		if (chosen_bdev == NULL ||
+		    bio_weight_less(d_bdev->bb_tgt_cnt, d_bdev->bb_weight, chosen_bdev->bb_tgt_cnt,
+				    chosen_bdev->bb_weight)) {
 			chosen_bdev = d_bdev;
 		}
 	}
 
+	if (chosen_bdev != NULL)
+		D_INFO("Assign target %d type %u to %s (weight %u, mapped count %d)\n", tgt_id, st,
+		       chosen_bdev->bb_name, chosen_bdev->bb_weight, chosen_bdev->bb_tgt_cnt);
+	else
+		D_ERROR("No eligible device has SMD slots for target %d type %u\n", tgt_id, st);
 	return chosen_bdev;
 }
 
