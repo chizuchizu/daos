@@ -148,13 +148,13 @@ def scons():
     if sprefix not in ["", prefix]:
         def install_dir(srcdir):
             """walk a directory and install targets"""
-            for root, _dirs, files in os.walk(srcdir):
-                dest_root = os.path.join(prefix, root, sprefix)
+            for root, _dirs, files in os.walk(join(sprefix, srcdir)):
+                dest_root = join(prefix, os.path.relpath(root, sprefix))
                 for fname in files:
                     denv.Install(dest_root, join(root, fname))
 
-        install_dir('share/spdk/scripts')
-        install_dir('include/spdk')
+        install_dir('share/daos/spdk/scripts')
+        install_dir('share/daos/spdk/include')
 
     denv.Tool('go_builder')
 
