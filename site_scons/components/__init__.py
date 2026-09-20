@@ -114,8 +114,8 @@ def define_mercury(reqs):
     else:
         reqs.define('rt', libs=['rt'])
 
-    # pylint: disable-next=wrong-spelling-in-comment,fixme
-    # TODO: change to --enable-opx once upgraded to libfabric 1.17+
+    # Omni-Path providers are optional on hosts using TCP or verbs. Let
+    # libfabric detect their dependencies rather than requiring system packages.
     ofi_build = ['./configure',
                  '--prefix=$OFI_PREFIX',
                  '--libdir=$OFI_PREFIX/lib64',
@@ -127,8 +127,8 @@ def define_mercury(reqs):
                  '--enable-verbs',
                  '--enable-rxm',
                  '--enable-shm',
-                 '--enable-psm2',
-                 '--enable-opx',
+                 '--enable-psm2=auto',
+                 '--enable-opx=auto',
                  '--disable-efa',
                  '--disable-dmabuf_peer_mem',
                  '--disable-hook_hmem',
