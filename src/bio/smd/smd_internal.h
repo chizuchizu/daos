@@ -31,8 +31,6 @@ extern char TABLE_POOLS[SMD_DEV_TYPE_MAX][SMD_DEV_NAME_MAX];
 
 extern char TABLE_POOLS_EX[SMD_DEV_TYPE_MAX][SMD_DEV_NAME_MAX];
 
-#define SMD_MAX_TGT_CNT		64
-
 /** callback parameter for smd_db_traverse */
 struct smd_trav_data {
 	d_list_t		td_list;

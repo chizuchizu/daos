@@ -30,6 +30,9 @@ enum smd_dev_type {
 	SMD_DEV_TYPE_MAX = 3,
 };
 
+/* Persistent device-table slots, including repeated target IDs for each role. */
+#define SMD_MAX_TGT_CNT 64
+
 static inline unsigned int
 smd_dev_type2role(enum smd_dev_type st)
 {
