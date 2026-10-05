@@ -56,6 +56,9 @@ pl_map_create_inited(struct pool_map *pool_map, struct pl_map_init_attr *mia,
 	struct pl_map           *map;
 	int                      rc;
 
+	if (pool_map_has_rank_weights(pool_map) && mia->ia_type != PL_TYPE_JUMP_MAP)
+		return -DER_NOTSUPPORTED;
+
 	for (dict = &pl_maps[0]; dict->pd_type != PL_TYPE_UNKNOWN; dict++) {
 		if (dict->pd_type == mia->ia_type)
 			break;

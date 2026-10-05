@@ -373,6 +373,7 @@ list_files files "${SL_PREFIX}/bin/hello_drpc" \
                  "${SL_PREFIX}/bin/eq_tests" \
                  "${SL_PREFIX}/bin/job_tests" \
                  "${SL_PREFIX}/bin/jump_pl_map" \
+                 "${SL_PREFIX}/bin/rank_weight_test" \
                  "${SL_PREFIX}/bin/pl_bench" \
                  "${SL_PREFIX}/bin/ring_pl_map" \
                  "${SL_PREFIX}/bin/security_test" \

@@ -35,9 +35,15 @@ def scons():
 
     pl_bench = denv.d_program('pl_bench', pl_bench_tgt, LIBS=libraries)
 
+    weight_test_tgt = denv.SharedObject(['rank_weight_test.c', 'place_obj_common.c'])
+    weight_pool_map = denv.SharedObject('rank_weight_pool_map', '../../pool/srv_pool_map.c')
+    rank_weight_test = denv.d_program('rank_weight_test', weight_test_tgt + weight_pool_map,
+                                      LIBS=libraries)
+
     denv.Install('$PREFIX/bin/', ring_pl_test)
     denv.Install('$PREFIX/bin/', jump_pl_test)
     denv.Install('$PREFIX/bin/', pl_bench)
+    denv.Install('$PREFIX/bin/', rank_weight_test)
 
 
 if __name__ == "SCons.Script":

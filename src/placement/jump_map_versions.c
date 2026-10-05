@@ -15,6 +15,79 @@
 #include <daos/pool_map.h>
 #include <isa-l.h>
 
+/* Integer-only avalanche: identical on clients/servers and all CPU architectures. */
+static uint64_t
+weight_hash(uint64_t value)
+{
+	value ^= value >> 30;
+	value *= UINT64_C(0xbf58476d1ce4e5b9);
+	value ^= value >> 27;
+	value *= UINT64_C(0x94d049bb133111eb);
+	return value ^ (value >> 31);
+}
+
+/* Sum immutable rank capabilities, regardless of transient failure state. */
+static uint64_t
+domain_weight(struct pool_domain *dom)
+{
+	uint64_t weight = 0;
+	uint32_t i;
+
+	if (dom->do_comp.co_type == PO_COMP_TP_RANK)
+		return dom->do_comp.co_weight;
+	for (i = 0; i < dom->do_child_nr; i++)
+		weight += domain_weight(&dom->do_children[i]);
+	return weight;
+}
+
+/* Virtual-ticket rendezvous. Each unit of capability has an independent ticket;
+ * the largest hash wins. Selection probability is proportional to ticket count.
+ * Stable domain IDs, not array indexes, identify tickets. Existing used-domain
+ * checks remain responsible for replica separation and target exhaustion.
+ */
+static uint32_t
+weighted_child(struct pool_domain *parent, uint32_t children, uint64_t key, uint32_t start,
+	       uint8_t *used, uint8_t *group_used, uint8_t *full)
+{
+	uint64_t best = 0, first_weight = domain_weight(&parent->do_children[0]);
+	uint32_t chosen = UINT32_MAX, i;
+	bool     equal  = true;
+
+	for (i = 1; i < children; i++)
+		if (domain_weight(&parent->do_children[i]) != first_weight) {
+			equal = false;
+			break;
+		}
+	/* Equal capabilities retain the exact legacy mapping, not just its ratio. */
+	if (equal)
+		return d_hash_jump(key, children);
+	for (i = 0; i < children; i++) {
+		struct pool_domain *child  = &parent->do_children[i];
+		uint64_t            weight = domain_weight(child), ticket;
+		uint64_t identity = ((uint64_t)child->do_comp.co_type << 32) | child->do_comp.co_id;
+
+		/* Filter already occupied domains directly, avoiding unbounded retry
+		 * costs when a high-weight node holds an earlier replica.
+		 */
+		if (isset(used, start + i) || isset(group_used, start + i) ||
+		    isset(full, start + i))
+			continue;
+
+		for (ticket = 0; ticket < weight; ticket++) {
+			uint64_t score =
+			    weight_hash(key ^ weight_hash(identity) ^
+					weight_hash(ticket + UINT64_C(0x9e3779b97f4a7c15)));
+
+			if (chosen == UINT32_MAX || score > best) {
+				best   = score;
+				chosen = i;
+			}
+		}
+	}
+	D_ASSERT(chosen != UINT32_MAX);
+	return chosen;
+}
+
 /*
  * NB: this function checks if the component should be skipped in jump hash layout generation
  * process. Only components that were *absent* from the pool map at \a allow_version may be
@@ -601,7 +674,11 @@ __get_target_v2(struct pool_domain *root_pos, struct pool_domain *curr_pd,
 			/* Keep choosing the new domain until the one has not been used. */
 			do {
 				key          = jm_crc(obj_key, shard_num, fail_num++);
-				selected_dom = d_hash_jump(key, children);
+				selected_dom =
+				    root_pos->do_comp.co_weight
+					? weighted_child(curr_dom, children, key, start_dom,
+							 dom_used, dom_cur_grp_used, dom_full)
+					: d_hash_jump(key, children);
 			} while (isset(dom_used, start_dom + selected_dom) ||
 				 isset(dom_cur_grp_used, start_dom + selected_dom));
 

@@ -292,7 +292,7 @@ pool_connect_in_set_data(crt_rpc_t *rpc, uint64_t pci_flags, uint64_t pci_query_
 
 	D_ASSERT(rpc_ver_atleast(rpc, POOL_PROTO_VER_WITH_SVC_OP_KEY));
 	in->pci_flags        = pci_flags;
-	in->pci_query_bits   = pci_query_bits;
+	in->pci_query_bits   = pci_query_bits | DAOS_PO_CONNECT_RANK_WEIGHTS;
 	in->pci_map_bulk     = pci_map_bulk;
 	in->pci_pool_version = pci_pool_version;
 }

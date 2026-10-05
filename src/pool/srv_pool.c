@@ -842,6 +842,28 @@ init_pool_metadata(struct rdb_tx *tx, const rdb_path_t *kvs, uint32_t nnodes, co
 		goto out_prop;
 	}
 
+	/* The leader snapshots policy into pool metadata once, at creation. Engines
+	 * must use the same creation setting so a leadership change is immaterial.
+	 */
+	rc = pool_buf_set_rank_weights(map_buf, getenv(POOL_RANK_WEIGHTS_ENV));
+	if (rc != 0) {
+		DL_ERROR(rc, "invalid " POOL_RANK_WEIGHTS_ENV " for pool creation");
+		goto out_map_buf;
+	}
+	if (pool_buf_has_rank_weights(map_buf)) {
+		uint32_t i;
+
+		entry = daos_prop_entry_get(prop, DAOS_PROP_PO_OBJ_VERSION);
+		if (entry == NULL || entry->dpe_val != DAOS_POOL_OBJ_VERSION_2)
+			D_GOTO(out_map_buf, rc = -DER_NOTSUPPORTED);
+		for (i = 0; i < map_buf->pb_node_nr; i++) {
+			struct pool_component *comp = &map_buf->pb_comps[map_buf->pb_domain_nr + i];
+
+			D_INFO("experimental pool placement rank %u weight %u\n", comp->co_rank,
+			       comp->co_weight);
+		}
+	}
+
 	/*
 	 * Only domains that are not entirely DOWNOUT can hold data, so the redundancy factor
 	 * must be admitted against those rather than against every domain in the map buffer.
@@ -4304,6 +4326,7 @@ pool_connect_handler(crt_rpc_t *rpc, int handler_version)
 	uint64_t                        query_bits;
 	crt_bulk_t                      bulk;
 	uint32_t                        cli_pool_version;
+	bool                            rank_weights_supported;
 	bool                            dup_op = false;
 	struct ds_pool_svc_op_val       op_val          = {0};
 	bool                            transfer_map    = false;
@@ -4324,6 +4347,8 @@ pool_connect_handler(crt_rpc_t *rpc, int handler_version)
 
 	pool_connect_in_get_cred(rpc, &credp);
 	pool_connect_in_get_data(rpc, &flags, &query_bits, &bulk, &cli_pool_version);
+	rank_weights_supported = (query_bits & DAOS_PO_CONNECT_RANK_WEIGHTS) != 0;
+	query_bits &= ~DAOS_PO_CONNECT_RANK_WEIGHTS;
 
 	if (query_bits & DAOS_PO_QUERY_REBUILD_STATUS) {
 		rc = ds_rebuild_query(in->pci_op.pi_uuid, &out->pco_rebuild_st);
@@ -4411,6 +4436,20 @@ pool_connect_handler(crt_rpc_t *rpc, int handler_version)
 		D_GOTO(out_map_version, rc);
 	}
 	D_ASSERT(prop != NULL);
+
+	/* An unmodified client must never compute uniform layouts for this pool. */
+	{
+		struct pool_buf *map_buf;
+		uint32_t         map_ver;
+
+		rc = locate_map_buf(&tx, &svc->ps_root, &map_buf, &map_ver);
+		if (rc == 0)
+			rc = pool_buf_check_rank_weight_capability(map_buf, rank_weights_supported);
+		if (rc != 0) {
+			DL_ERROR(rc, "pool connection requires rank-weight-aware client");
+			D_GOTO(out_map_version, rc);
+		}
+	}
 
 	global_ver_entry = daos_prop_entry_get(prop, DAOS_PROP_PO_GLOBAL_VERSION);
 	D_ASSERT(global_ver_entry != NULL);

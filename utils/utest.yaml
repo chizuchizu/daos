@@ -65,6 +65,7 @@
   base: "PREFIX"
   tests:
     - cmd: ["bin/jump_pl_map"]
+    - cmd: ["bin/rank_weight_test"]
 - name: rdb
   memcheck: False
   tests:

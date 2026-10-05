@@ -88,6 +88,9 @@
  */
 #define DAOS_POOL_GLOBAL_VERSION 4
 
+/* Experimental pool-connect capability, carried in the query bitmap only. */
+#define DAOS_PO_CONNECT_RANK_WEIGHTS (1ULL << 63)
+
 /**
  * Each individual object layout format, like oid layout, dkey to group,
  * dkey to EC group start.

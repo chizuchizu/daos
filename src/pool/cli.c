@@ -1318,6 +1318,7 @@ out_task:
 }
 
 #define DC_POOL_GLOB_MAGIC	(0x16da0386)
+#define DC_POOL_GLOB_WEIGHTED_MAGIC (0x16da0387)
 
 /* Structure of global buffer for dc_pool */
 struct dc_pool_glob {
@@ -1353,10 +1354,13 @@ swap_pool_buf(struct pool_buf *pb)
 
 	D_ASSERT(pb != NULL);
 
+	D_SWAP32S(&pb->pb_version);
 	D_SWAP32S(&pb->pb_csum);
 	D_SWAP32S(&pb->pb_nr);
 	D_SWAP32S(&pb->pb_domain_nr);
+	D_SWAP32S(&pb->pb_node_nr);
 	D_SWAP32S(&pb->pb_target_nr);
+	D_SWAP32S(&pb->pb_padding);
 
 	for (i = 0; i < pb->pb_nr; i++) {
 		pool_comp = &pb->pb_comps[i];
@@ -1368,6 +1372,8 @@ swap_pool_buf(struct pool_buf *pb)
 		D_SWAP32S(&pool_comp->co_rank);
 		D_SWAP32S(&pool_comp->co_ver);
 		D_SWAP32S(&pool_comp->co_fseq);
+		D_SWAP32S(&pool_comp->co_out_ver);
+		D_SWAP32S(&pool_comp->co_flags);
 		D_SWAP32S(&pool_comp->co_nr);
 	}
 }
@@ -1446,7 +1452,8 @@ dc_pool_l2g(daos_handle_t poh, d_iov_t *glob)
 
 	/* init pool global handle */
 	pool_glob = (struct dc_pool_glob *)glob->iov_buf;
-	pool_glob->dpg_magic = DC_POOL_GLOB_MAGIC;
+	pool_glob->dpg_magic =
+	    pool_buf_has_rank_weights(map_buf) ? DC_POOL_GLOB_WEIGHTED_MAGIC : DC_POOL_GLOB_MAGIC;
 	pool_glob->dpg_max_supported_layout_ver = pool->dp_max_supported_layout_ver;
 	uuid_copy(pool_glob->dpg_pool, pool->dp_pool);
 	uuid_copy(pool_glob->dpg_pool_hdl, pool->dp_pool_hdl);
@@ -1512,6 +1519,9 @@ dc_pool_g2l(struct dc_pool_glob *pool_glob, size_t len, daos_handle_t *poh)
 	D_ASSERT(poh != NULL);
 	map_buf = pool_glob->dpg_map_buf;
 	D_ASSERT(map_buf != NULL);
+	if ((pool_glob->dpg_magic == DC_POOL_GLOB_WEIGHTED_MAGIC) !=
+	    pool_buf_has_rank_weights(map_buf))
+		return -DER_INVAL;
 
 	/** allocate and fill in pool connection */
 	pool = dc_pool_alloc(pool_glob->dpg_map_pb_nr);
@@ -1589,10 +1599,11 @@ dc_pool_global2local(d_iov_t glob, daos_handle_t *poh)
 	}
 
 	pool_glob = (struct dc_pool_glob *)glob.iov_buf;
-	if (pool_glob->dpg_magic == D_SWAP32(DC_POOL_GLOB_MAGIC)) {
+	if (pool_glob->dpg_magic == D_SWAP32(DC_POOL_GLOB_MAGIC) ||
+	    pool_glob->dpg_magic == D_SWAP32(DC_POOL_GLOB_WEIGHTED_MAGIC)) {
 		swap_pool_glob(pool_glob);
-		D_ASSERT(pool_glob->dpg_magic == DC_POOL_GLOB_MAGIC);
-	} else if (pool_glob->dpg_magic != DC_POOL_GLOB_MAGIC) {
+	} else if (pool_glob->dpg_magic != DC_POOL_GLOB_MAGIC &&
+		   pool_glob->dpg_magic != DC_POOL_GLOB_WEIGHTED_MAGIC) {
 		D_ERROR("Bad dpg_magic: %#x.\n", pool_glob->dpg_magic);
 		D_GOTO(out, rc = -DER_INVAL);
 	}

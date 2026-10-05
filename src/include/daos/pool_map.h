@@ -19,6 +19,11 @@
 #define POOL_MAP_VER_2		(2)
 #define POOL_MAP_VERSION	POOL_MAP_VER_2
 
+/* Private experimental format: rank weights and weighted placement policy v1. */
+#define POOL_MAP_VER_RANK_WEIGHTS (0x80000001U)
+#define POOL_RANK_WEIGHTS_ENV     "DAOS_POOL_RANK_WEIGHTS"
+#define POOL_RANK_WEIGHT_MAX      255U
+
 #define DF_TARGET "Target[%d] (rank %u idx %u status %u flags %u ver %u in/out ver %u fseq %u)"
 #define DP_TARGET(t) t->ta_comp.co_id, t->ta_comp.co_rank, t->ta_comp.co_index,\
 		     t->ta_comp.co_status, t->ta_comp.co_flags, t->ta_comp.co_ver, \
@@ -86,7 +91,7 @@ struct pool_component {
 	uint8_t		co_status;
 	/** target index inside the node */
 	uint8_t		co_index;
-	/** padding for 64-bit alignment */
+	/** Rank weight in POOL_MAP_VER_RANK_WEIGHTS; unused in legacy maps. */
 	uint8_t		co_padding;
 	/** Immutable component ID. */
 	uint32_t	co_id;
@@ -302,6 +307,27 @@ pool_map_status2name(uint32_t status)
 }
 
 struct pool_map;
+
+/* Reuse the serialized padding byte without changing component size. */
+#define co_weight co_padding
+
+static inline bool
+pool_buf_has_rank_weights(const struct pool_buf *buf)
+{
+	return buf->pb_version == POOL_MAP_VER_RANK_WEIGHTS;
+}
+
+static inline int
+pool_buf_check_rank_weight_capability(const struct pool_buf *buf, bool supported)
+{
+	return pool_buf_has_rank_weights(buf) && !supported ? -DER_NOTSUPPORTED : 0;
+}
+
+/* Apply a strict rank=weight list to a fresh map buffer, atomically. NULL is a no-op. */
+int
+pool_buf_set_rank_weights(struct pool_buf *buf, const char *spec);
+bool
+pool_map_has_rank_weights(struct pool_map *map);
 
 struct pool_buf *pool_buf_alloc(unsigned int nr);
 struct pool_buf *pool_buf_dup(struct pool_buf *buf);

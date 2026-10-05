@@ -60,6 +60,8 @@ struct pool_map {
 	pthread_mutex_t		 po_lock;
 	/** Current version of pool map */
 	uint32_t		 po_version;
+	/** Serialized format, including the immutable experimental placement policy. */
+	uint32_t                 po_buf_version;
 	/** refcount on the pool map */
 	int			 po_ref;
 	/** # domain layers */
@@ -394,6 +396,88 @@ pool_buf_free(struct pool_buf *buf)
 	D_FREE(buf);
 }
 
+/* Parse bounded unsigned decimal numbers, rejecting signs and whitespace. */
+static int
+rank_weight_number(const char **cursor, uint32_t limit, uint32_t *value)
+{
+	const char *p = *cursor;
+	uint32_t    n = 0;
+
+	if (*p < '0' || *p > '9')
+		return -DER_INVAL;
+	while (*p >= '0' && *p <= '9') {
+		uint32_t digit = *p++ - '0';
+
+		if (n > limit / 10 || (n == limit / 10 && digit > limit % 10))
+			return -DER_INVAL;
+		n = n * 10 + digit;
+	}
+	*cursor = p;
+	*value  = n;
+	return 0;
+}
+
+int
+pool_buf_set_rank_weights(struct pool_buf *buf, const char *spec)
+{
+	uint8_t    *weights;
+	const char *p = spec;
+	uint32_t    i;
+	int         rc = 0;
+
+	if (spec == NULL)
+		return 0;
+	if (*spec == '\0' || buf->pb_version != POOL_MAP_VER_2 || buf->pb_node_nr == 0 ||
+	    buf->pb_domain_nr + buf->pb_node_nr + buf->pb_target_nr != buf->pb_nr)
+		return -DER_INVAL;
+	D_ALLOC_ARRAY(weights, buf->pb_node_nr);
+	if (weights == NULL)
+		return -DER_NOMEM;
+	for (i = 0; i < buf->pb_domain_nr; i++)
+		if (buf->pb_comps[i].co_type == PO_COMP_TP_PERF)
+			D_GOTO(out, rc = -DER_NOTSUPPORTED);
+
+	/* Leave buf untouched until every entry has been validated. */
+	for (;;) {
+		uint32_t rank, weight;
+
+		rc = rank_weight_number(&p, UINT32_MAX, &rank);
+		if (rc != 0 || *p++ != '=')
+			D_GOTO(out, rc = -DER_INVAL);
+		rc = rank_weight_number(&p, POOL_RANK_WEIGHT_MAX, &weight);
+		if (rc != 0 || weight == 0 || (*p != '\0' && *p != ','))
+			D_GOTO(out, rc = -DER_INVAL);
+		for (i = 0; i < buf->pb_node_nr; i++) {
+			struct pool_component *comp = &buf->pb_comps[buf->pb_domain_nr + i];
+
+			if (comp->co_type != PO_COMP_TP_RANK)
+				D_GOTO(out, rc = -DER_INVAL);
+			if (comp->co_rank == rank)
+				break;
+		}
+		if (i == buf->pb_node_nr || weights[i] != 0)
+			D_GOTO(out, rc = -DER_INVAL);
+		weights[i] = weight;
+		if (*p == '\0')
+			break;
+		p++;
+	}
+	for (i = 0; i < buf->pb_nr; i++)
+		buf->pb_comps[i].co_weight = 0;
+	for (i = 0; i < buf->pb_node_nr; i++)
+		buf->pb_comps[buf->pb_domain_nr + i].co_weight = weights[i] ? weights[i] : 1;
+	buf->pb_version = POOL_MAP_VER_RANK_WEIGHTS;
+out:
+	D_FREE(weights);
+	return rc;
+}
+
+bool
+pool_map_has_rank_weights(struct pool_map *map)
+{
+	return map->po_buf_version == POOL_MAP_VER_RANK_WEIGHTS;
+}
+
 /**
  * Add an array of components to the pool buffer.
  * The caller should always attach domains before targets, and attach high
@@ -476,6 +560,10 @@ pool_buf_parse(struct pool_buf *buf, struct pool_domain **tree_pp)
 	int			 size;
 	int			 i, nr;
 	int			 rc = 0;
+	bool                     weighted = pool_buf_has_rank_weights(buf);
+
+	if (buf->pb_version != POOL_MAP_VER_1 && buf->pb_version != POOL_MAP_VER_2 && !weighted)
+		return -DER_NOTSUPPORTED;
 
 	if (buf->pb_target_nr == 0 || buf->pb_node_nr == 0 ||
 	    buf->pb_domain_nr + buf->pb_node_nr + buf->pb_target_nr != buf->pb_nr) {
@@ -483,6 +571,15 @@ pool_buf_parse(struct pool_buf *buf, struct pool_domain **tree_pp)
 			buf->pb_nr, buf->pb_domain_nr, buf->pb_node_nr,
 			buf->pb_target_nr);
 		return -DER_INVAL;
+	}
+	if (weighted) {
+		for (i = 0; i < buf->pb_nr; i++) {
+			comp = &buf->pb_comps[i];
+			if (comp->co_type == PO_COMP_TP_PERF)
+				return -DER_NOTSUPPORTED;
+			if ((comp->co_type == PO_COMP_TP_RANK) != (comp->co_weight != 0))
+				return -DER_INVAL;
+		}
 	}
 	if (buf->pb_domain_nr != 0 && buf->pb_comps[0].co_type != PO_COMP_TP_PERF &&
 	    buf->pb_comps[0].co_type != PO_COMP_TP_FAULT &&
@@ -505,14 +602,18 @@ pool_buf_parse(struct pool_buf *buf, struct pool_domain **tree_pp)
 
 	targets	= (struct pool_target *)&tree[buf->pb_domain_nr +
 					      buf->pb_node_nr + 1];
-	for (i = 0; i < buf->pb_target_nr; i++)
+	for (i = 0; i < buf->pb_target_nr; i++) {
 		targets[i].ta_comp = buf->pb_comps[buf->pb_domain_nr +
 						buf->pb_node_nr + i];
+		targets[i].ta_comp.co_weight = 0;
+	}
 
 	/* Initialize the root */
 	parent = &tree[0]; /* root */
 	parent->do_comp.co_type   = PO_COMP_TP_ROOT;
 	parent->do_comp.co_status = PO_COMP_ST_UPIN;
+	/* Synthetic root marker; real weights reside on rank components. */
+	parent->do_comp.co_weight = weighted;
 	if (buf->pb_domain_nr == 0) {
 		/* nodes are directly attached under the root */
 		parent->do_target_nr = buf->pb_target_nr;
@@ -543,6 +644,8 @@ pool_buf_parse(struct pool_buf *buf, struct pool_domain **tree_pp)
 		nr = 0;
 		comp = &tree[i].do_comp;
 		*comp = buf->pb_comps[i - 1];
+		if (!weighted)
+			comp->co_weight = 0;
 		if (comp->co_type >= PO_COMP_TP_ROOT) {
 			D_ERROR("Invalid type %d/%d\n", type, comp->co_type);
 			rc = -DER_INVAL;
@@ -654,6 +757,7 @@ pool_buf_extract(struct pool_map *map, struct pool_buf **buf_pp)
 	buf = pool_buf_alloc(cntr.cc_domains + cntr.cc_targets);
 	if (buf == NULL)
 		return -DER_NOMEM;
+	buf->pb_version = map->po_buf_version;
 
 	for (dom_nr = cntr.cc_top_doms; dom_nr != 0;
 	     tree = tree[0].do_children) {
@@ -1889,6 +1993,10 @@ pool_map_extend(struct pool_map *map, uint32_t version, struct pool_buf *buf)
 	struct pool_domain *tree = NULL;
 	int		    rc;
 
+	/* Immutable policy v1 does not support adding ranks to weighted pools. */
+	if (pool_map_has_rank_weights(map) || pool_buf_has_rank_weights(buf))
+		return -DER_NOTSUPPORTED;
+
 	rc = pool_buf_parse(buf, &tree);
 	if (rc != 0)
 		return rc;
@@ -1964,6 +2072,7 @@ pool_map_create(struct pool_buf *buf, uint32_t version, struct pool_map **map_pt
 	}
 
 	map->po_version = version;
+	map->po_buf_version = buf->pb_version;
 	map->po_ref = 1; /* 1 for caller */
 out:
 	if (rc != 0)
@@ -3245,6 +3354,9 @@ pool_domain_print(struct pool_domain *domain, int dep)
 	D_PRINT("%*s%s[%d] v%d %s\n", dep * 8, "", pool_domain_name(domain),
 		domain->do_comp.co_id, domain->do_comp.co_ver,
 		pool_comp_state2str(domain->do_comp.co_status));
+	if (domain->do_comp.co_type == PO_COMP_TP_RANK && domain->do_comp.co_weight != 0)
+		D_PRINT("%*srank %u weight %u\n", dep * 8, "", domain->do_comp.co_rank,
+			domain->do_comp.co_weight);
 
 	D_ASSERT(domain->do_targets != NULL);
 
@@ -3275,6 +3387,8 @@ void
 pool_map_print(struct pool_map *map)
 {
 	D_PRINT("Cluster map version %d\n", map->po_version);
+	if (pool_map_has_rank_weights(map))
+		D_PRINT("Experimental weighted placement policy v1\n");
 	if (map->po_tree != NULL)
 		pool_domain_print(map->po_tree, 0);
 }

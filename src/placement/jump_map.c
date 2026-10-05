@@ -1026,6 +1026,8 @@ jump_map_obj_place(struct pl_map *map, uint32_t layout_version, struct daos_obj_
 
 	jmap = pl_map2jmap(map);
 	oid = md->omd_id;
+	if (pool_map_has_rank_weights(map->pl_poolmap) && layout_version != 2)
+		return -DER_NOTSUPPORTED;
 	D_DEBUG(DB_PL, "Determining location for object: "DF_OID", ver: %d, pda %u\n",
 		DP_OID(oid), md->omd_ver, md->omd_pda);
 
@@ -1118,6 +1120,8 @@ jump_map_obj_find_diff(struct pl_map *map, uint32_t layout_ver, struct daos_obj_
 	int idx = 0;
 
 	D_DEBUG(DB_PL, "Finding Rebuild shards at version: %u\n", reint_ver);
+	if (pool_map_has_rank_weights(map->pl_poolmap) && layout_ver != 2)
+		return -DER_NOTSUPPORTED;
 
 	/* Caller should guarantee the pl_map is up-to-date */
 	if (pl_map_version(map) < reint_ver) {

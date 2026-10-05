@@ -575,6 +575,7 @@ fi
 %{_bindir}/eq_tests
 %{_bindir}/job_tests
 %{_bindir}/jump_pl_map
+%{_bindir}/rank_weight_test
 %{_bindir}/pl_bench
 %{_bindir}/ring_pl_map
 %{_bindir}/security_test
