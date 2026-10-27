@@ -75,13 +75,6 @@ bio_weight_get(const char *config, const char *device, unsigned int *weight)
 	return rc;
 }
 
-/* Reserve a complete role assignment without overflowing the persistent table. */
-static inline bool
-bio_weight_fits(unsigned int used, unsigned int needed, unsigned int limit)
-{
-	return needed > 0 && used <= limit && needed <= limit - used;
-}
-
 /* Preserve list-order ties and the legacy least-target policy for unit weights. */
 static inline bool
 bio_weight_less(unsigned int count, unsigned int weight, unsigned int best_count,

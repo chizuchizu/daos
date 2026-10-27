@@ -1340,10 +1340,10 @@ bio_nvme_configured(enum smd_dev_type type)
 static struct bio_bdev *
 choose_device(int tgt_id, enum smd_dev_type st)
 {
-	struct bio_bdev     *d_bdev;
-	struct bio_bdev     *chosen_bdev = NULL;
-	int                  rc;
-	struct smd_dev_info *dev_info = NULL;
+	struct bio_bdev		*d_bdev;
+	struct bio_bdev		*chosen_bdev = NULL;
+	int			 rc;
+	struct smd_dev_info	*dev_info = NULL;
 
 	D_ASSERT(!d_list_empty(&nvme_glb.bd_bdevs));
 	/*
@@ -1352,39 +1352,26 @@ choose_device(int tgt_id, enum smd_dev_type st)
 	 * path, so changing weights never silently relocates persistent data.
 	 */
 	d_list_for_each_entry(d_bdev, &nvme_glb.bd_bdevs, bb_link) {
-		unsigned int      used = 0, needed = 0;
-		enum smd_dev_type role;
-
 		if (!is_role_match(d_bdev->bb_roles, smd_dev_type2role(st)))
 			continue;
 
-		/* Count every SMD slot assign_roles() will append, including system targets. */
-		for (role = SMD_DEV_TYPE_DATA; role < SMD_DEV_TYPE_MAX; role++) {
-			if (!is_role_match(d_bdev->bb_roles, smd_dev_type2role(role)))
-				continue;
-			needed++;
-			if (!bio_nvme_configured(SMD_DEV_TYPE_META))
-				break;
-		}
-
-		/* Use persistent occupancy: bb_tgt_cnt deliberately excludes system targets. */
-		rc = smd_dev_get_by_id(d_bdev->bb_uuid, &dev_info);
-		if (rc == 0) {
-			D_ASSERT(dev_info != NULL && dev_info->sdi_tgt_cnt != 0);
-			used = dev_info->sdi_tgt_cnt;
-			smd_dev_free_info(dev_info);
-		} else if (rc != -DER_NONEXIST) {
-			D_ERROR("Unable to get dev info for " DF_UUID "\n",
-				DP_UUID(d_bdev->bb_uuid));
-			return NULL;
-		}
+		/* Find the initial target count per device, as in the legacy selector. */
 		if (!d_bdev->bb_tgt_cnt_init) {
-			d_bdev->bb_tgt_cnt      = used;
+			rc = smd_dev_get_by_id(d_bdev->bb_uuid, &dev_info);
+			if (rc == 0) {
+				D_ASSERT(dev_info != NULL && dev_info->sdi_tgt_cnt != 0);
+				d_bdev->bb_tgt_cnt = dev_info->sdi_tgt_cnt;
+				smd_dev_free_info(dev_info);
+			} else if (rc == -DER_NONEXIST) {
+				/* Device isn't in SMD, not used by DAOS yet */
+				d_bdev->bb_tgt_cnt = 0;
+			} else {
+				D_ERROR("Unable to get dev info for "DF_UUID"\n",
+					DP_UUID(d_bdev->bb_uuid));
+				return NULL;
+			}
 			d_bdev->bb_tgt_cnt_init = 1;
 		}
-		/* Check the entire role assignment before its first persistent update. */
-		if (!bio_weight_fits(used, needed, SMD_MAX_TGT_CNT))
-			continue;
 		/* Compare ratios with integer products, retaining list-order ties. */
 		if (chosen_bdev == NULL ||
 		    bio_weight_less(d_bdev->bb_tgt_cnt, d_bdev->bb_weight, chosen_bdev->bb_tgt_cnt,
@@ -1397,7 +1384,7 @@ choose_device(int tgt_id, enum smd_dev_type st)
 		D_INFO("Assign target %d type %u to %s (weight %u, mapped count %d)\n", tgt_id, st,
 		       chosen_bdev->bb_name, chosen_bdev->bb_weight, chosen_bdev->bb_tgt_cnt);
 	else
-		D_ERROR("No eligible device has SMD slots for target %d type %u\n", tgt_id, st);
+		D_ERROR("No eligible device for target %d type %u\n", tgt_id, st);
 	return chosen_bdev;
 }
 
