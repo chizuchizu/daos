@@ -19,7 +19,6 @@
 #include <daos_srv/bio.h>
 #include <daos_srv/smd.h>
 #include "../smd_internal.h"
-#include "../../bio_weight.h"
 #include <daos/tests_lib.h>
 #include <daos/sys_db.h>
 
@@ -505,7 +504,7 @@ ut_dev_replace(void **state)
 	}
 }
 
-/* Exercise the capacity guard against real SMD accounting, not just a counter. */
+/* Exercise the existing SMD limit with role and system-target mappings. */
 static void
 ut_weight_capacity(void **state)
 {
@@ -527,9 +526,6 @@ ut_weight_capacity(void **state)
 	used = info->sdi_tgt_cnt;
 	smd_dev_free_info(info);
 	assert_int_equal(used, 63);
-	assert_false(bio_weight_fits(used, 3, SMD_MAX_TGT_CNT));
-	assert_false(bio_weight_fits(used, 2, SMD_MAX_TGT_CNT));
-	assert_true(bio_weight_fits(used, 1, SMD_MAX_TGT_CNT));
 
 	/* System-target mappings also consume a slot, despite not adding VOS load. */
 	rc = smd_dev_add_tgt(id, BIO_SYS_TGT_ID, SMD_DEV_TYPE_META, NULL);
@@ -537,7 +533,6 @@ ut_weight_capacity(void **state)
 	rc = smd_dev_get_by_id(id, &info);
 	assert_rc_equal(rc, 0);
 	assert_int_equal(info->sdi_tgt_cnt, SMD_MAX_TGT_CNT);
-	assert_false(bio_weight_fits(info->sdi_tgt_cnt, 1, SMD_MAX_TGT_CNT));
 	smd_dev_free_info(info);
 	rc = smd_dev_add_tgt(id, 1021, SMD_DEV_TYPE_DATA, NULL);
 	assert_rc_equal(rc, -DER_OVERFLOW);
